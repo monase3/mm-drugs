@@ -1,0 +1,13 @@
+{
+  "name": "mm-drugs-pos-bridge",
+  "version": "1.0.0",
+  "description": "أداة ربط أنظمة نقاط البيع (POS) المحلية مع منصة MM Drugs",
+  "main": "sync.js",
+  "scripts": {
+    "sync": "node sync.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "dotenv": "^16.4.7"
+  }
+}
