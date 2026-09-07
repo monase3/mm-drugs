@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
 
     return jsonOk({ rating }, 201);
   } catch (error: any) {
-    if (error?.code === "23505") {
+    if (error?.code === "23505" || error?.cause?.code === "23505") {
       return jsonError("لقد قمت بتقييم هذا الطلب مسبقاً", 409);
     }
     return handleUnknownError(error);

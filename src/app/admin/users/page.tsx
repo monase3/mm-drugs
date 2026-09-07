@@ -17,6 +17,7 @@ const roleLabels: Record<string, string> = {
   citizen: "مواطن",
   pharmacy_owner: "صاحب صيدلية",
   pharmacy_staff: "موظف",
+  supplier: "مورد",
   admin: "مشرف",
 };
 
@@ -24,6 +25,7 @@ const roleColors: Record<string, string> = {
   citizen: "bg-slate-100 text-slate-700",
   pharmacy_owner: "bg-teal-100 text-teal-800",
   pharmacy_staff: "bg-amber-100 text-amber-800",
+  supplier: "bg-purple-100 text-purple-800",
   admin: "bg-rose-100 text-rose-800",
 };
 

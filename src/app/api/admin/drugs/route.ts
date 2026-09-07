@@ -29,11 +29,17 @@ export async function GET(request: NextRequest) {
     const offset = Math.max(parseInt(searchParams.get("offset") ?? "0") || 0, 0);
 
     let query = sql`SELECT * FROM drugs`;
-    const countQuery = sql`SELECT count(*)::int AS count FROM drugs`;
+    let countQuery = sql`SELECT count(*)::int AS count FROM drugs`;
 
     if (search) {
       query = sql`
         SELECT * FROM drugs
+        WHERE name ILIKE ${"%" + search + "%"}
+           OR generic_name ILIKE ${"%" + search + "%"}
+           OR barcode ILIKE ${"%" + search + "%"}
+      `;
+      countQuery = sql`
+        SELECT count(*)::int AS count FROM drugs
         WHERE name ILIKE ${"%" + search + "%"}
            OR generic_name ILIKE ${"%" + search + "%"}
            OR barcode ILIKE ${"%" + search + "%"}

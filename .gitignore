@@ -17,3 +17,5 @@ pos_bridge/node_modules/
 scripts/*.js
 start-tunnel.ps1
 start-tunnel2.ps1
+
+.vercel

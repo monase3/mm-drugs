@@ -1,16 +1,6 @@
 -- =====================================================================
 -- MM Drugs (أدوية اليمن) — SQL Init Script
 -- PostgreSQL + PostGIS
---
--- Run this once against a fresh database to provision the full schema
--- used by the MM Drugs platform (Web dashboards, POS sync API, and the
--- Flutter citizens app). This file is idempotent and safe to re-run.
---
--- Note: the Next.js application manages this same schema through
--- Drizzle ORM (see src/db/schema.ts). This script is provided as the
--- canonical, framework-agnostic reference for DevOps / DBAs and mirrors
--- exactly what `npx drizzle-kit push` provisions, plus PostGIS specific
--- indexes and triggers that keep `geom` in sync with lat/lng.
 -- =====================================================================
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
@@ -26,7 +16,9 @@ CREATE TABLE IF NOT EXISTS users (
   phone           TEXT,
   password_hash   TEXT NOT NULL,
   role            TEXT NOT NULL DEFAULT 'citizen'
-                    CHECK (role IN ('citizen', 'pharmacy_owner', 'pharmacy_staff', 'admin')),
+                    CHECK (role IN ('citizen', 'pharmacy_owner', 'pharmacy_staff', 'admin', 'supplier')),
+  city            TEXT,
+  pharmacy_id     UUID,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -49,10 +41,8 @@ CREATE TABLE IF NOT EXISTS pharmacies (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Spatial index — critical for ST_DWithin performance at scale.
 CREATE INDEX IF NOT EXISTS pharmacies_geom_gix ON pharmacies USING GIST (geom);
 
--- Keep geom automatically in sync whenever lat/lng change.
 CREATE OR REPLACE FUNCTION pharmacies_sync_geom() RETURNS TRIGGER AS $$
 BEGIN
   NEW.geom := ST_SetSRID(ST_MakePoint(NEW.longitude, NEW.latitude), 4326)::geography;
@@ -79,11 +69,11 @@ CREATE TABLE IF NOT EXISTS drugs (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS drugs_name_trgm_idx ON drugs USING GIN (name gin_trgm_ops);
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX IF NOT EXISTS drugs_name_trgm_idx ON drugs USING GIN (name gin_trgm_ops);
 
 -- ---------------------------------------------------------------------
--- SUPPLIERS
+-- SUPPLIERS (legacy, linked to pharmacy)
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS suppliers (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -95,16 +85,18 @@ CREATE TABLE IF NOT EXISTS suppliers (
 );
 
 -- ---------------------------------------------------------------------
--- INVENTORY (per pharmacy stock, synced from local POS systems)
+-- INVENTORY (per pharmacy stock)
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS inventory (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pharmacy_id     UUID NOT NULL REFERENCES pharmacies(id) ON DELETE CASCADE,
   drug_id         UUID NOT NULL REFERENCES drugs(id) ON DELETE CASCADE,
   quantity        INTEGER NOT NULL DEFAULT 0,
-  price           NUMERIC(12,2) NOT NULL DEFAULT 0,
+  cost_price      NUMERIC(12,2) NOT NULL DEFAULT '0',
+  retail_price    NUMERIC(12,2) NOT NULL DEFAULT '0',
   expiry_date     DATE,
   batch_number    TEXT NOT NULL DEFAULT 'GENERAL',
+  min_stock_level INTEGER NOT NULL DEFAULT 10,
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (pharmacy_id, drug_id, batch_number)
 );
@@ -113,7 +105,25 @@ CREATE INDEX IF NOT EXISTS inventory_drug_id_idx ON inventory (drug_id);
 CREATE INDEX IF NOT EXISTS inventory_pharmacy_id_idx ON inventory (pharmacy_id);
 
 -- ---------------------------------------------------------------------
--- PURCHASE INVOICES + ITEMS
+-- INVENTORY MOVEMENTS
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS inventory_movements (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  pharmacy_id     UUID NOT NULL REFERENCES pharmacies(id) ON DELETE CASCADE,
+  drug_id         UUID NOT NULL REFERENCES drugs(id) ON DELETE CASCADE,
+  batch_number    TEXT NOT NULL DEFAULT 'GENERAL',
+  movement_type   TEXT NOT NULL CHECK (movement_type IN ('purchase','sale','waste','adjustment','return','transfer')),
+  quantity_change INTEGER NOT NULL,
+  unit_cost       NUMERIC(12,2),
+  reference_type  TEXT,
+  reference_id    UUID,
+  reason          TEXT,
+  created_by      UUID REFERENCES users(id) ON DELETE SET NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ---------------------------------------------------------------------
+-- PURCHASE INVOICES
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS purchase_invoices (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -134,17 +144,112 @@ CREATE TABLE IF NOT EXISTS purchase_invoice_items (
 );
 
 -- ---------------------------------------------------------------------
--- Example: nearby-drug search query used by /api/drugs/nearby
+-- PURCHASE ORDERS (marketplace / supplier orders)
 -- ---------------------------------------------------------------------
--- SELECT p.id, p.name, p.city, p.phone, p.latitude, p.longitude,
---        i.quantity, i.price,
---        ST_Distance(p.geom, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography) AS distance_m
--- FROM pharmacies p
--- JOIN inventory i ON i.pharmacy_id = p.id
--- JOIN drugs d ON d.id = i.drug_id
--- WHERE p.is_active = TRUE
---   AND i.quantity > 0
---   AND d.name ILIKE '%' || :drug_name || '%'
---   AND ST_DWithin(p.geom, ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)::geography, :radius_m)
--- ORDER BY distance_m ASC
--- LIMIT 50;
+CREATE TABLE IF NOT EXISTS purchase_orders (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  pharmacy_id     UUID NOT NULL REFERENCES pharmacies(id) ON DELETE CASCADE,
+  supplier_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','confirmed','shipped','delivered','cancelled','expired')),
+  total_amount    NUMERIC(14,2) NOT NULL DEFAULT '0',
+  notes           TEXT,
+  confirmed_at    TIMESTAMPTZ,
+  shipped_at      TIMESTAMPTZ,
+  delivered_at    TIMESTAMPTZ,
+  cancelled_at    TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS purchase_order_items (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  order_id        UUID NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+  drug_id         UUID NOT NULL REFERENCES drugs(id) ON DELETE RESTRICT,
+  quantity        INTEGER NOT NULL DEFAULT 1,
+  unit_price      NUMERIC(12,2) NOT NULL
+);
+
+-- ---------------------------------------------------------------------
+-- SUPPLIER PRODUCTS (marketplace catalog)
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS supplier_products (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  supplier_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  drug_id         UUID NOT NULL REFERENCES drugs(id) ON DELETE CASCADE,
+  price           NUMERIC(12,2) NOT NULL,
+  min_quantity    INTEGER NOT NULL DEFAULT 1,
+  available       BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (supplier_id, drug_id)
+);
+
+-- ---------------------------------------------------------------------
+-- RATINGS (pharmacy owner → supplier)
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ratings (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  order_id        UUID NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+  from_user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  to_user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  score           INTEGER NOT NULL,
+  comment         TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (order_id, from_user_id)
+);
+
+-- ---------------------------------------------------------------------
+-- PHARMACY REQUESTS (citizen → pharmacy)
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pharmacy_requests (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  citizen_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  pharmacy_id     UUID NOT NULL REFERENCES pharmacies(id) ON DELETE CASCADE,
+  drug_name       TEXT NOT NULL,
+  quantity        INTEGER NOT NULL DEFAULT 1,
+  notes           TEXT,
+  status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','accepted','rejected','fulfilled')),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ---------------------------------------------------------------------
+-- PHARMACY REVIEWS (citizen → pharmacy)
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pharmacy_reviews (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  citizen_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  pharmacy_id     UUID NOT NULL REFERENCES pharmacies(id) ON DELETE CASCADE,
+  request_id      UUID NOT NULL REFERENCES pharmacy_requests(id) ON DELETE CASCADE,
+  score           INTEGER NOT NULL,
+  comment         TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ---------------------------------------------------------------------
+-- NOTIFICATIONS
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS notifications (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type            TEXT NOT NULL,
+  title           TEXT NOT NULL,
+  message         TEXT NOT NULL,
+  reference_id    UUID,
+  reference_type  TEXT,
+  is_read         BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ---------------------------------------------------------------------
+-- ADMIN AUDIT LOG
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS admin_audit_log (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  admin_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  action          TEXT NOT NULL,
+  entity_type     TEXT NOT NULL,
+  entity_id       TEXT,
+  details         TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);

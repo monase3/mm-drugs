@@ -14,7 +14,7 @@ export async function GET(request: Request) {
       u.id, u.full_name, u.email, u.phone, u.role, u.created_at,
       p.name AS pharmacy_name
     FROM users u
-    LEFT JOIN pharmacies p ON p.owner_id = u.id
+    LEFT JOIN pharmacies p ON p.owner_id = u.id OR p.id = u.pharmacy_id
     ORDER BY u.created_at DESC
   `);
 

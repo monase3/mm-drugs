@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { PublicNav } from "@/components/PublicNav";
+import { getCurrentUser } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -36,7 +37,9 @@ const features = [
   },
 ];
 
-export default function HomePage() {
+export default async function HomePage() {
+  const user = await getCurrentUser();
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-teal-50 via-white to-white">
       <PublicNav />
@@ -54,12 +57,35 @@ export default function HomePage() {
             القريبة، إدارة ذكية للمخزون، ومزامنة مباشرة مع أنظمة نقاط البيع المحلية.
           </p>
           <div className="mt-10 flex flex-wrap items-center justify-center gap-4">
-            <Link
-              href="/register"
-              className="rounded-xl bg-teal-600 px-7 py-3.5 text-base font-bold text-white shadow-lg shadow-teal-200 transition hover:bg-teal-700"
-            >
-              ابدأ الآن — سجّل صيدليتك مجاناً
-            </Link>
+            {user ? (
+              <Link
+                href="/dashboard"
+                className="rounded-xl bg-teal-600 px-7 py-3.5 text-base font-bold text-white shadow-lg shadow-teal-200 transition hover:bg-teal-700"
+              >
+                {user.role === "pharmacy_owner" || user.role === "pharmacy_staff"
+                  ? "انتقل للوحة التحكم"
+                  : user.role === "admin"
+                  ? "انتظر لوحة المشرف"
+                  : user.role === "supplier"
+                  ? "انتقل لسوق الموردين"
+                  : "انتقل للداشبورد"}
+              </Link>
+            ) : (
+              <>
+                <Link
+                  href="/register"
+                  className="rounded-xl bg-teal-600 px-7 py-3.5 text-base font-bold text-white shadow-lg shadow-teal-200 transition hover:bg-teal-700"
+                >
+                  ابدأ الآن — سجّل صيدليتك مجاناً
+                </Link>
+                <Link
+                  href="/login"
+                  className="rounded-xl border border-slate-300 bg-white px-7 py-3.5 text-base font-bold text-slate-800 transition hover:border-teal-400 hover:text-teal-700"
+                >
+                  تسجيل الدخول
+                </Link>
+              </>
+            )}
             <Link
               href="/docs"
               className="rounded-xl border border-slate-300 bg-white px-7 py-3.5 text-base font-bold text-slate-800 transition hover:border-teal-400 hover:text-teal-700"

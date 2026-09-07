@@ -23,15 +23,15 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const body = await request.json();
     const data = patchSchema.parse(body);
 
-    const sets: string[] = [];
-    if (data.isActive !== undefined) sets.push(`is_active = ${data.isActive}`);
-    if (data.city !== undefined) sets.push(`city = '${data.city}'`);
-    if (data.address !== undefined) sets.push(`address = '${data.address}'`);
+    const sets: ReturnType<typeof sql>[] = [];
+    if (data.isActive !== undefined) sets.push(sql`is_active = ${data.isActive}`);
+    if (data.city !== undefined) sets.push(sql`city = ${data.city}`);
+    if (data.address !== undefined) sets.push(sql`address = ${data.address}`);
 
     if (sets.length === 0) return jsonError("لا توجد بيانات للتحديث", 422);
 
     const result = await db.execute(sql`
-      UPDATE pharmacies SET ${sql.raw(sets.join(", "))}
+      UPDATE pharmacies SET ${sql.join(sets, sql`, `)}
       WHERE id = ${id} RETURNING id, name, is_active, city
     `);
 
