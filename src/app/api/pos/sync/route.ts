@@ -194,8 +194,16 @@ export async function POST(request: NextRequest) {
 }
 
 async function handleSale(request: NextRequest, pharmacyId: string) {
-  const body = await request.json();
-  const payload = salesPayloadSchema.parse(body);
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonError("الجسم غير صالح JSON", 400);
+  }
+  const payload = salesPayloadSchema.safeParse(body);
+  if (!payload.success) {
+    return jsonError("بيانات المبيعات غير صالحة", 422, payload.error.flatten().fieldErrors);
+  }
 
   const results: Array<{
     name: string;
@@ -204,7 +212,7 @@ async function handleSale(request: NextRequest, pharmacyId: string) {
     message?: string;
   }> = [];
 
-  for (const item of payload.items) {
+  for (const item of payload.data.items) {
     try {
       let drugId: string | null = null;
 
@@ -231,18 +239,23 @@ async function handleSale(request: NextRequest, pharmacyId: string) {
         continue;
       }
 
-      const [inv] = await db
+      // Look for ANY inventory for this drug at this pharmacy (all batches)
+      const inventoryRows = await db
         .select()
         .from(inventory)
-        .where(and(eq(inventory.pharmacyId, pharmacyId), eq(inventory.drugId, drugId)))
-        .limit(1);
+        .where(and(eq(inventory.pharmacyId, pharmacyId), eq(inventory.drugId, drugId)));
 
-      if (!inv) {
+      if (inventoryRows.length === 0) {
         results.push({ name: item.name, status: "error", quantityDeducted: 0, message: "غير موجود في المخزون" });
         continue;
       }
 
-      if (inv.quantity < item.quantity) {
+      // Use the row with highest quantity (or first one)
+      const inv = inventoryRows.reduce((best, current) =>
+        (current.quantity ?? 0) > (best.quantity ?? 0) ? current : best
+      );
+
+      if ((inv.quantity ?? 0) < item.quantity) {
         results.push({
           name: item.name,
           status: "error",
