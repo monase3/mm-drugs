@@ -63,12 +63,14 @@ export async function POST(request: NextRequest) {
     const url = new URL(request.url);
     const action = url.searchParams.get("action") ?? "sync";
 
+    // Parse body once — request.json() can only be called once
+    const body = await request.json();
+
     if (action === "sale") {
-      return handleSale(request, pharmacy.id);
+      return handleSale(body, pharmacy.id);
     }
 
     // Default: inventory sync
-    const body = await request.json();
     const payload = syncPayloadSchema.parse(body);
 
     const results: Array<{
@@ -193,13 +195,7 @@ export async function POST(request: NextRequest) {
   }
 }
 
-async function handleSale(request: NextRequest, pharmacyId: string) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return jsonError("الجسم غير صالح JSON", 400);
-  }
+async function handleSale(body: unknown, pharmacyId: string) {
   const payload = salesPayloadSchema.safeParse(body);
   if (!payload.success) {
     return jsonError("بيانات المبيعات غير صالحة", 422, payload.error.flatten().fieldErrors);
